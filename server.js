@@ -1,11 +1,21 @@
 const express = require('express');
 const cors = require('cors');
+const http = require('http');
+const { Server } = require('socket.io');
+
 const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+    cors: {
+        origin: "*",
+        methods: ["GET", "POST"]
+    }
+});
 
 app.use(cors());
 app.use(express.json());
 
-// In-memory storage (replace with database in production)
+// In-memory storage
 const sessions = new Map();
 const offers = new Map();
 const answers = new Map();
@@ -70,7 +80,35 @@ setInterval(() => {
     }
 }, 5 * 60 * 1000);
 
+// WebSocket signaling for instant connection
+io.on('connection', (socket) => {
+    console.log('Client connected:', socket.id);
+
+    socket.on('join-session', (sessionId) => {
+        socket.join(sessionId);
+        console.log(`Socket ${socket.id} joined session ${sessionId}`);
+    });
+
+    socket.on('offer', (data) => {
+        offers.set(data.sessionId, data.offer);
+        socket.to(data.sessionId).emit('offer', data.offer);
+    });
+
+    socket.on('answer', (data) => {
+        answers.set(data.sessionId, data.answer);
+        socket.to(data.sessionId).emit('answer', data.answer);
+    });
+
+    socket.on('ice-candidate', (data) => {
+        socket.to(data.sessionId).emit('ice-candidate', data.candidate);
+    });
+
+    socket.on('disconnect', () => {
+        console.log('Client disconnected:', socket.id);
+    });
+});
+
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
+server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
 });

@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { io } from 'socket.io-client';
 
 function App() {
     const [sessionId, setSessionId] = useState(null);
@@ -55,6 +56,10 @@ function App() {
         peerConnection.current = pc;
 
         const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001';
+        const socket = io(API_URL);
+
+        // Join session room
+        socket.emit('join-session', sessionId);
 
         // Add stream to peer connection
         stream.getTracks().forEach(track => {
@@ -70,56 +75,35 @@ function App() {
             channel.onclose = () => setStatus('✅ Screen sharing active - waiting for viewers');
         };
 
-        // Send ICE candidates to server
+        // Send ICE candidates instantly
         pc.onicecandidate = (event) => {
             if (event.candidate) {
-                fetch(`${API_URL}/api/signaling/${sessionId}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ type: 'candidate', candidate: event.candidate })
-                }).catch(console.error);
+                socket.emit('ice-candidate', { sessionId, candidate: event.candidate });
             }
         };
 
-        // Create offer for viewers
+        // Create and send offer instantly
         pc.createOffer().then(offer => {
             return pc.setLocalDescription(offer);
         }).then(() => {
-            return fetch(`${API_URL}/api/signaling/${sessionId}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ type: 'offer', offer: pc.localDescription })
-            });
-        }).then(() => {
-            console.log('Host: Offer sent to server for session:', sessionId);
+            socket.emit('offer', { sessionId, offer: pc.localDescription });
+            console.log('Host: Offer sent instantly for session:', sessionId);
         }).catch(error => {
             console.error('Error creating offer:', error);
             setStatus('❌ Error setting up connection');
         });
 
-        // Listen for answers
-        const checkForAnswer = setInterval(() => {
-            fetch(`${API_URL}/api/signaling/${sessionId}/answer`)
-                .then(res => res.json())
-                .then(data => {
-                    if (data && data.answer) {
-                        pc.setRemoteDescription(data.answer).then(() => {
-                            setStatus('✅ Viewer connecting...');
-                            // Get viewer candidates after a delay
-                            setTimeout(() => {
-                                fetch(`${API_URL}/api/signaling/${sessionId}/candidates`)
-                                    .then(res => res.json())
-                                    .then(candidates => {
-                                        candidates.forEach(candidate => {
-                                            pc.addIceCandidate(candidate).catch(console.error);
-                                        });
-                                    }).catch(console.error);
-                            }, 1000);
-                        }).catch(console.error);
-                        clearInterval(checkForAnswer);
-                    }
-                }).catch(console.error);
-        }, 2000);
+        // Listen for answers instantly
+        socket.on('answer', (answer) => {
+            pc.setRemoteDescription(answer).then(() => {
+                setStatus('✅ Viewer connected!');
+            }).catch(console.error);
+        });
+
+        // Listen for ICE candidates instantly
+        socket.on('ice-candidate', (candidate) => {
+            pc.addIceCandidate(candidate).catch(console.error);
+        });
     };
 
     const setupViewer = (viewSessionId) => {
@@ -129,6 +113,10 @@ function App() {
         peerConnection.current = pc;
 
         const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001';
+        const socket = io(API_URL);
+
+        // Join session room
+        socket.emit('join-session', viewSessionId);
 
         pc.ontrack = (event) => {
             console.log('Received remote stream:', event.streams[0]);
@@ -143,64 +131,40 @@ function App() {
             channel.onopen = () => console.log('Data channel opened');
         };
 
-        // Send ICE candidates to server
+        // Send ICE candidates instantly
         pc.onicecandidate = (event) => {
             if (event.candidate) {
-                fetch(`${API_URL}/api/signaling/${viewSessionId}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ type: 'candidate', candidate: event.candidate })
-                }).catch(console.error);
+                socket.emit('ice-candidate', { sessionId: viewSessionId, candidate: event.candidate });
             }
         };
 
-        let checkForOffer;
-        let timeoutId;
-        
-        // Look for host offer
-        checkForOffer = setInterval(() => {
-            fetch(`${API_URL}/api/signaling/${viewSessionId}/offer`)
-                .then(res => res.json())
-                .then(data => {
-                    if (data && data.offer) {
-                        clearInterval(checkForOffer);
-                        clearTimeout(timeoutId);
-                        setStatus('🔄 Connecting to screen share...');
-                        console.log('Viewer: Processing offer for session:', viewSessionId);
-                        pc.setRemoteDescription(data.offer).then(() => {
-                            return pc.createAnswer();
-                        }).then(answer => {
-                            return pc.setLocalDescription(answer);
-                        }).then(() => {
-                            return fetch(`${API_URL}/api/signaling/${viewSessionId}`, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ type: 'answer', answer: pc.localDescription })
-                            });
-                        }).then(() => {
-                            setStatus('🔄 Establishing connection...');
-                            // Get host candidates after delay
-                            setTimeout(() => {
-                                fetch(`${API_URL}/api/signaling/${viewSessionId}/candidates`)
-                                    .then(res => res.json())
-                                    .then(candidates => {
-                                        candidates.forEach(candidate => {
-                                            pc.addIceCandidate(candidate).catch(console.error);
-                                        });
-                                    }).catch(console.error);
-                            }, 1500);
-                        }).catch(error => {
-                            console.error('Error processing offer:', error);
-                            setStatus('❌ Error connecting to screen share');
-                        });
-                    }
-                }).catch(console.error);
-        }, 2000);
+        // Listen for offer instantly
+        socket.on('offer', (offer) => {
+            setStatus('🔄 Connecting to screen share...');
+            console.log('Viewer: Processing offer for session:', viewSessionId);
+            pc.setRemoteDescription(offer).then(() => {
+                return pc.createAnswer();
+            }).then(answer => {
+                return pc.setLocalDescription(answer);
+            }).then(() => {
+                socket.emit('answer', { sessionId: viewSessionId, answer: pc.localDescription });
+                setStatus('🔄 Establishing connection...');
+            }).catch(error => {
+                console.error('Error processing offer:', error);
+                setStatus('❌ Error connecting to screen share');
+            });
+        });
+
+        // Listen for ICE candidates instantly
+        socket.on('ice-candidate', (candidate) => {
+            pc.addIceCandidate(candidate).catch(console.error);
+        });
 
         // Timeout if no offer found
-        timeoutId = setTimeout(() => {
-            clearInterval(checkForOffer);
-            setStatus('❌ No active screen share found. Make sure the presenter started sharing.');
+        setTimeout(() => {
+            if (status === 'Waiting for connection...') {
+                setStatus('❌ No active screen share found. Make sure the presenter started sharing.');
+            }
         }, 10000);
     };
 
