@@ -113,10 +113,30 @@ function App() {
         peerConnection.current = pc;
 
         const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001';
-        const socket = io(API_URL);
-
-        // Join session room
-        socket.emit('join-session', viewSessionId);
+        console.log('Viewer: Connecting to API:', API_URL);
+        
+        // Try WebSocket first, fallback to HTTP polling
+        let socket;
+        let useWebSocket = true;
+        
+        try {
+            socket = io(API_URL, { timeout: 5000 });
+            
+            socket.on('connect', () => {
+                console.log('WebSocket connected');
+                socket.emit('join-session', viewSessionId);
+            });
+            
+            socket.on('connect_error', () => {
+                console.log('WebSocket failed, falling back to HTTP polling');
+                useWebSocket = false;
+                setupHttpPolling();
+            });
+        } catch (error) {
+            console.log('WebSocket not available, using HTTP polling');
+            useWebSocket = false;
+            setupHttpPolling();
+        }
 
         pc.ontrack = (event) => {
             console.log('Received remote stream:', event.streams[0]);
@@ -131,41 +151,76 @@ function App() {
             channel.onopen = () => console.log('Data channel opened');
         };
 
-        // Send ICE candidates instantly
+        // Send ICE candidates
         pc.onicecandidate = (event) => {
             if (event.candidate) {
-                socket.emit('ice-candidate', { sessionId: viewSessionId, candidate: event.candidate });
+                if (useWebSocket && socket) {
+                    socket.emit('ice-candidate', { sessionId: viewSessionId, candidate: event.candidate });
+                }
             }
         };
 
-        // Listen for offer instantly
-        socket.on('offer', (offer) => {
-            setStatus('🔄 Connecting to screen share...');
-            console.log('Viewer: Processing offer for session:', viewSessionId);
-            pc.setRemoteDescription(offer).then(() => {
-                return pc.createAnswer();
-            }).then(answer => {
-                return pc.setLocalDescription(answer);
-            }).then(() => {
-                socket.emit('answer', { sessionId: viewSessionId, answer: pc.localDescription });
-                setStatus('🔄 Establishing connection...');
-            }).catch(error => {
-                console.error('Error processing offer:', error);
-                setStatus('❌ Error connecting to screen share');
+        // WebSocket listeners
+        if (socket) {
+            socket.on('offer', (offer) => {
+                setStatus('🔄 Connecting to screen share...');
+                console.log('Viewer: Processing offer for session:', viewSessionId);
+                pc.setRemoteDescription(offer).then(() => {
+                    return pc.createAnswer();
+                }).then(answer => {
+                    return pc.setLocalDescription(answer);
+                }).then(() => {
+                    socket.emit('answer', { sessionId: viewSessionId, answer: pc.localDescription });
+                    setStatus('🔄 Establishing connection...');
+                }).catch(error => {
+                    console.error('Error processing offer:', error);
+                    setStatus('❌ Error connecting to screen share');
+                });
             });
-        });
 
-        // Listen for ICE candidates instantly
-        socket.on('ice-candidate', (candidate) => {
-            pc.addIceCandidate(candidate).catch(console.error);
-        });
+            socket.on('ice-candidate', (candidate) => {
+                pc.addIceCandidate(candidate).catch(console.error);
+            });
+        }
+        
+        // HTTP Polling fallback
+        function setupHttpPolling() {
+            console.log('Using HTTP polling fallback');
+            const checkForOffer = setInterval(() => {
+                fetch(`${API_URL}/api/signaling/${viewSessionId}/offer`)
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data && data.offer) {
+                            clearInterval(checkForOffer);
+                            setStatus('🔄 Connecting to screen share...');
+                            console.log('Viewer: Processing offer for session:', viewSessionId);
+                            pc.setRemoteDescription(data.offer).then(() => {
+                                return pc.createAnswer();
+                            }).then(answer => {
+                                return pc.setLocalDescription(answer);
+                            }).then(() => {
+                                return fetch(`${API_URL}/api/signaling/${viewSessionId}`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ type: 'answer', answer: pc.localDescription })
+                                });
+                            }).then(() => {
+                                setStatus('🔄 Establishing connection...');
+                            }).catch(error => {
+                                console.error('Error processing offer:', error);
+                                setStatus('❌ Error connecting to screen share');
+                            });
+                        }
+                    }).catch(console.error);
+            }, 2000);
+        }
 
         // Timeout if no offer found
         setTimeout(() => {
             if (status === 'Waiting for connection...') {
                 setStatus('❌ No active screen share found. Make sure the presenter started sharing.');
             }
-        }, 10000);
+        }, 15000);
     };
 
     const stopSharing = () => {
