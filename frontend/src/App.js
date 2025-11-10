@@ -18,7 +18,7 @@ function App() {
             setSessionId(viewSessionId);
             setIsViewing(true);
             setStatus('Waiting for connection...');
-            setupViewer();
+            setupViewer(viewSessionId);
         }
     }, []);
 
@@ -54,6 +54,8 @@ function App() {
         });
         peerConnection.current = pc;
 
+        const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001';
+
         // Add stream to peer connection
         stream.getTracks().forEach(track => {
             pc.addTrack(track, stream);
@@ -68,49 +70,64 @@ function App() {
             channel.onclose = () => setStatus('✅ Screen sharing active - waiting for viewers');
         };
 
-        // Store connection info for viewers
+        // Send ICE candidates to server
         pc.onicecandidate = (event) => {
             if (event.candidate) {
-                const connectionData = {
-                    type: 'host',
-                    sessionId: sessionId,
-                    candidate: event.candidate,
-                    timestamp: Date.now()
-                };
-                localStorage.setItem(`connection-${sessionId}`, JSON.stringify(connectionData));
+                fetch(`${API_URL}/api/signaling/${sessionId}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ type: 'candidate', candidate: event.candidate })
+                }).catch(console.error);
             }
         };
 
         // Create offer for viewers
         pc.createOffer().then(offer => {
-            pc.setLocalDescription(offer);
-            const offerData = {
-                type: 'offer',
-                sessionId: sessionId,
-                offer: offer,
-                timestamp: Date.now()
-            };
-            localStorage.setItem(`offer-${sessionId}`, JSON.stringify(offerData));
+            return pc.setLocalDescription(offer);
+        }).then(() => {
+            return fetch(`${API_URL}/api/signaling/${sessionId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ type: 'offer', offer: pc.localDescription })
+            });
+        }).then(() => {
+            console.log('Host: Offer sent to server for session:', sessionId);
+        }).catch(error => {
+            console.error('Error creating offer:', error);
+            setStatus('❌ Error setting up connection');
         });
 
         // Listen for answers
         const checkForAnswer = setInterval(() => {
-            const answerData = localStorage.getItem(`answer-${sessionId}`);
-            if (answerData) {
-                const answer = JSON.parse(answerData);
-                pc.setRemoteDescription(answer.answer);
-                clearInterval(checkForAnswer);
-            }
+            fetch(`${API_URL}/api/signaling/${sessionId}/answer`)
+                .then(res => res.json())
+                .then(data => {
+                    if (data && data.answer) {
+                        pc.setRemoteDescription(data.answer).then(() => {
+                            // Get viewer candidates
+                            return fetch(`${API_URL}/api/signaling/${sessionId}/candidates`);
+                        }).then(res => res.json())
+                        .then(candidates => {
+                            candidates.forEach(candidate => {
+                                pc.addIceCandidate(candidate).catch(console.error);
+                            });
+                        }).catch(console.error);
+                        clearInterval(checkForAnswer);
+                    }
+                }).catch(console.error);
         }, 1000);
     };
 
-    const setupViewer = () => {
+    const setupViewer = (viewSessionId) => {
         const pc = new RTCPeerConnection({
             iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
         });
         peerConnection.current = pc;
 
+        const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001';
+
         pc.ontrack = (event) => {
+            console.log('Received remote stream:', event.streams[0]);
             setStatus('✅ Connected - receiving screen share');
             if (remoteVideoRef.current) {
                 remoteVideoRef.current.srcObject = event.streams[0];
@@ -122,33 +139,59 @@ function App() {
             channel.onopen = () => console.log('Data channel opened');
         };
 
-        // Look for host offer
-        const checkForOffer = setInterval(() => {
-            const offerData = localStorage.getItem(`offer-${sessionId}`);
-            if (offerData) {
-                const offer = JSON.parse(offerData);
-                pc.setRemoteDescription(offer.offer).then(() => {
-                    return pc.createAnswer();
-                }).then(answer => {
-                    pc.setLocalDescription(answer);
-                    const answerData = {
-                        type: 'answer',
-                        sessionId: sessionId,
-                        answer: answer,
-                        timestamp: Date.now()
-                    };
-                    localStorage.setItem(`answer-${sessionId}`, JSON.stringify(answerData));
-                });
-                clearInterval(checkForOffer);
+        // Send ICE candidates to server
+        pc.onicecandidate = (event) => {
+            if (event.candidate) {
+                fetch(`${API_URL}/api/signaling/${viewSessionId}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ type: 'candidate', candidate: event.candidate })
+                }).catch(console.error);
             }
+        };
+
+        let checkForOffer;
+        let timeoutId;
+        
+        // Look for host offer
+        checkForOffer = setInterval(() => {
+            fetch(`${API_URL}/api/signaling/${viewSessionId}/offer`)
+                .then(res => res.json())
+                .then(data => {
+                    if (data && data.offer) {
+                        clearInterval(checkForOffer);
+                        clearTimeout(timeoutId);
+                        console.log('Viewer: Processing offer for session:', viewSessionId);
+                        pc.setRemoteDescription(data.offer).then(() => {
+                            return pc.createAnswer();
+                        }).then(answer => {
+                            return pc.setLocalDescription(answer);
+                        }).then(() => {
+                            return fetch(`${API_URL}/api/signaling/${viewSessionId}`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ type: 'answer', answer: pc.localDescription })
+                            });
+                        }).then(() => {
+                            // Get host candidates
+                            return fetch(`${API_URL}/api/signaling/${viewSessionId}/candidates`);
+                        }).then(res => res.json())
+                        .then(candidates => {
+                            candidates.forEach(candidate => {
+                                pc.addIceCandidate(candidate).catch(console.error);
+                            });
+                        }).catch(error => {
+                            console.error('Error processing offer:', error);
+                            setStatus('❌ Error connecting to screen share');
+                        });
+                    }
+                }).catch(console.error);
         }, 1000);
 
         // Timeout if no offer found
-        setTimeout(() => {
+        timeoutId = setTimeout(() => {
             clearInterval(checkForOffer);
-            if (status === 'Waiting for connection...') {
-                setStatus('❌ No active screen share found. Make sure the presenter started sharing.');
-            }
+            setStatus('❌ No active screen share found. Make sure the presenter started sharing.');
         }, 10000);
     };
 
