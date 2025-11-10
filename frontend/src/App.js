@@ -104,18 +104,22 @@ function App() {
                 .then(data => {
                     if (data && data.answer) {
                         pc.setRemoteDescription(data.answer).then(() => {
-                            // Get viewer candidates
-                            return fetch(`${API_URL}/api/signaling/${sessionId}/candidates`);
-                        }).then(res => res.json())
-                        .then(candidates => {
-                            candidates.forEach(candidate => {
-                                pc.addIceCandidate(candidate).catch(console.error);
-                            });
+                            setStatus('✅ Viewer connecting...');
+                            // Get viewer candidates after a delay
+                            setTimeout(() => {
+                                fetch(`${API_URL}/api/signaling/${sessionId}/candidates`)
+                                    .then(res => res.json())
+                                    .then(candidates => {
+                                        candidates.forEach(candidate => {
+                                            pc.addIceCandidate(candidate).catch(console.error);
+                                        });
+                                    }).catch(console.error);
+                            }, 1000);
                         }).catch(console.error);
                         clearInterval(checkForAnswer);
                     }
                 }).catch(console.error);
-        }, 1000);
+        }, 2000);
     };
 
     const setupViewer = (viewSessionId) => {
@@ -161,6 +165,7 @@ function App() {
                     if (data && data.offer) {
                         clearInterval(checkForOffer);
                         clearTimeout(timeoutId);
+                        setStatus('🔄 Connecting to screen share...');
                         console.log('Viewer: Processing offer for session:', viewSessionId);
                         pc.setRemoteDescription(data.offer).then(() => {
                             return pc.createAnswer();
@@ -173,20 +178,24 @@ function App() {
                                 body: JSON.stringify({ type: 'answer', answer: pc.localDescription })
                             });
                         }).then(() => {
-                            // Get host candidates
-                            return fetch(`${API_URL}/api/signaling/${viewSessionId}/candidates`);
-                        }).then(res => res.json())
-                        .then(candidates => {
-                            candidates.forEach(candidate => {
-                                pc.addIceCandidate(candidate).catch(console.error);
-                            });
+                            setStatus('🔄 Establishing connection...');
+                            // Get host candidates after delay
+                            setTimeout(() => {
+                                fetch(`${API_URL}/api/signaling/${viewSessionId}/candidates`)
+                                    .then(res => res.json())
+                                    .then(candidates => {
+                                        candidates.forEach(candidate => {
+                                            pc.addIceCandidate(candidate).catch(console.error);
+                                        });
+                                    }).catch(console.error);
+                            }, 1500);
                         }).catch(error => {
                             console.error('Error processing offer:', error);
                             setStatus('❌ Error connecting to screen share');
                         });
                     }
                 }).catch(console.error);
-        }, 1000);
+        }, 2000);
 
         // Timeout if no offer found
         timeoutId = setTimeout(() => {
