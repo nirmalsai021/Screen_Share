@@ -7,12 +7,12 @@ function App() {
     const [isSharing, setIsSharing] = useState(false);
     const [shareUrl, setShareUrl] = useState('');
     const [isViewing, setIsViewing] = useState(false);
+    const [error, setError] = useState('');
     const localVideoRef = useRef(null);
     const remoteVideoRef = useRef(null);
     const peerConnection = useRef(null);
 
     useEffect(() => {
-        // Check if viewing a shared session
         const urlParams = new URLSearchParams(window.location.search);
         const viewSessionId = urlParams.get('session');
         if (viewSessionId) {
@@ -36,15 +36,21 @@ function App() {
             
             return sessionId;
         } catch (error) {
-            alert('Failed to create session');
+            // Fallback to local session for demo
+            const localSessionId = 'local-' + Math.random().toString(36).substr(2, 9);
+            setSessionId(localSessionId);
+            const url = `${window.location.origin}?session=${localSessionId}`;
+            setShareUrl(url);
+            return localSessionId;
         }
     };
 
     const startScreenShare = async () => {
         try {
-            // Request screen sharing permission
+            setError('');
+            
             const stream = await navigator.mediaDevices.getDisplayMedia({
-                video: true,
+                video: { mediaSource: 'screen' },
                 audio: true
             });
 
@@ -60,26 +66,29 @@ function App() {
             setIsSharing(true);
             setupPeerConnection(stream, currentSessionId, true);
 
+            stream.getVideoTracks()[0].addEventListener('ended', () => {
+                stopSharing();
+            });
+
         } catch (error) {
             if (error.name === 'NotAllowedError') {
-                alert('Screen sharing permission denied. Please allow screen sharing to continue.');
+                setError('Screen sharing permission denied. Please allow screen sharing to continue.');
             } else {
-                alert('Failed to start screen sharing: ' + error.message);
+                setError('Failed to start screen sharing: ' + error.message);
             }
         }
     };
 
     const joinSession = async (sessionId) => {
-        try {
-            setupPeerConnection(null, sessionId, false);
-        } catch (error) {
-            alert('Failed to join session');
-        }
+        setupPeerConnection(null, sessionId, false);
     };
 
     const setupPeerConnection = (stream, sessionId, isHost) => {
         const pc = new RTCPeerConnection({
-            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ]
         });
 
         peerConnection.current = pc;
@@ -91,7 +100,7 @@ function App() {
         }
 
         pc.ontrack = (event) => {
-            if (remoteVideoRef.current) {
+            if (remoteVideoRef.current && event.streams[0]) {
                 remoteVideoRef.current.srcObject = event.streams[0];
             }
         };
@@ -108,6 +117,11 @@ function App() {
                 sendSignal(sessionId, 'offer', offer);
             });
         }
+
+        // Poll for signaling messages
+        if (!isHost) {
+            pollForSignals(sessionId, pc);
+        }
     };
 
     const sendSignal = async (sessionId, type, data) => {
@@ -118,8 +132,39 @@ function App() {
                 body: JSON.stringify({ type, data })
             });
         } catch (error) {
-            console.error('Signaling error:', error);
+            console.log('Using local signaling (demo mode)');
+            // Store in localStorage for demo
+            const signals = JSON.parse(localStorage.getItem('signals') || '{}');
+            if (!signals[sessionId]) signals[sessionId] = [];
+            signals[sessionId].push({ type, data, timestamp: Date.now() });
+            localStorage.setItem('signals', JSON.stringify(signals));
         }
+    };
+
+    const pollForSignals = async (sessionId, pc) => {
+        const interval = setInterval(() => {
+            try {
+                const signals = JSON.parse(localStorage.getItem('signals') || '{}');
+                const sessionSignals = signals[sessionId] || [];
+                
+                sessionSignals.forEach(async (signal) => {
+                    if (signal.type === 'offer') {
+                        await pc.setRemoteDescription(signal.data);
+                        const answer = await pc.createAnswer();
+                        await pc.setLocalDescription(answer);
+                        sendSignal(sessionId, 'answer', answer);
+                    } else if (signal.type === 'answer') {
+                        await pc.setRemoteDescription(signal.data);
+                    } else if (signal.type === 'ice-candidate') {
+                        await pc.addIceCandidate(signal.data);
+                    }
+                });
+            } catch (error) {
+                console.log('Polling error:', error);
+            }
+        }, 2000);
+
+        setTimeout(() => clearInterval(interval), 300000); // Stop after 5 minutes
     };
 
     const stopSharing = () => {
@@ -131,6 +176,7 @@ function App() {
             peerConnection.current.close();
         }
         setIsSharing(false);
+        setError('');
     };
 
     const copyShareUrl = () => {
@@ -148,6 +194,12 @@ function App() {
                    Your screen will only be shared when you click "Start Screen Share" and grant permission through your browser.</p>
             </div>
 
+            {error && (
+                <div style={{background: '#f8d7da', border: '1px solid #f5c6cb', padding: '15px', borderRadius: '4px', margin: '20px 0', color: '#721c24'}}>
+                    {error}
+                </div>
+            )}
+
             {!isViewing ? (
                 <div>
                     <h2>Share Your Screen</h2>
@@ -155,7 +207,7 @@ function App() {
                         {isSharing ? 'Sharing...' : 'Start Screen Share'}
                     </button>
                     {isSharing && (
-                        <button onClick={stopSharing}>Stop Sharing</button>
+                        <button onClick={stopSharing} style={{marginLeft: '10px'}}>Stop Sharing</button>
                     )}
                     
                     {shareUrl && (
@@ -176,7 +228,7 @@ function App() {
                     <h2>Viewing Shared Screen</h2>
                     <p>Session ID: {sessionId}</p>
                     <div className="video-container">
-                        <video ref={remoteVideoRef} autoPlay />
+                        <video ref={remoteVideoRef} autoPlay controls />
                     </div>
                 </div>
             )}
