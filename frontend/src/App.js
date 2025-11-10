@@ -8,7 +8,8 @@ function App() {
     const [status, setStatus] = useState('');
     const localVideoRef = useRef(null);
     const remoteVideoRef = useRef(null);
-    const streamChannel = useRef(null);
+    const peerConnection = useRef(null);
+    const dataChannel = useRef(null);
 
     useEffect(() => {
         const urlParams = new URLSearchParams(window.location.search);
@@ -16,8 +17,8 @@ function App() {
         if (viewSessionId) {
             setSessionId(viewSessionId);
             setIsViewing(true);
-            setStatus('Connecting to screen share...');
-            setupViewer(viewSessionId);
+            setStatus('Waiting for connection...');
+            setupViewer();
         }
     }, []);
 
@@ -34,36 +35,9 @@ function App() {
             setSessionId(newSessionId);
             setShareUrl(`${window.location.origin}?session=${newSessionId}`);
             setIsSharing(true);
-            setStatus('✅ Screen sharing active');
+            setStatus('✅ Screen sharing active - waiting for viewers');
 
-            // Create broadcast channel for real-time sharing
-            streamChannel.current = new BroadcastChannel(`stream-${newSessionId}`);
-            
-            // Capture and broadcast frames
-            const canvas = document.createElement('canvas');
-            const ctx = canvas.getContext('2d');
-            const video = document.createElement('video');
-            video.srcObject = stream;
-            video.play();
-
-            video.onloadedmetadata = () => {
-                canvas.width = video.videoWidth;
-                canvas.height = video.videoHeight;
-                
-                const broadcastFrame = () => {
-                    if (isSharing && streamChannel.current) {
-                        ctx.drawImage(video, 0, 0);
-                        const imageData = canvas.toDataURL('image/jpeg', 0.5);
-                        streamChannel.current.postMessage({
-                            type: 'frame',
-                            data: imageData,
-                            timestamp: Date.now()
-                        });
-                        setTimeout(broadcastFrame, 200); // 5 FPS
-                    }
-                };
-                broadcastFrame();
-            };
+            setupHost(stream, newSessionId);
 
             stream.getVideoTracks()[0].addEventListener('ended', () => {
                 stopSharing();
@@ -74,24 +48,108 @@ function App() {
         }
     };
 
-    const setupViewer = (sessionId) => {
-        const channel = new BroadcastChannel(`stream-${sessionId}`);
+    const setupHost = (stream, sessionId) => {
+        const pc = new RTCPeerConnection({
+            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        });
+        peerConnection.current = pc;
+
+        // Add stream to peer connection
+        stream.getTracks().forEach(track => {
+            pc.addTrack(track, stream);
+        });
+
+        // Create data channel for signaling
+        dataChannel.current = pc.createDataChannel('signaling');
         
-        channel.onmessage = (event) => {
-            if (event.data.type === 'frame') {
-                setStatus('✅ Receiving live screen share');
-                if (remoteVideoRef.current) {
-                    remoteVideoRef.current.src = event.data.data;
-                }
+        pc.ondatachannel = (event) => {
+            const channel = event.channel;
+            channel.onopen = () => setStatus('✅ Viewer connected!');
+            channel.onclose = () => setStatus('✅ Screen sharing active - waiting for viewers');
+        };
+
+        // Store connection info for viewers
+        pc.onicecandidate = (event) => {
+            if (event.candidate) {
+                const connectionData = {
+                    type: 'host',
+                    sessionId: sessionId,
+                    candidate: event.candidate,
+                    timestamp: Date.now()
+                };
+                localStorage.setItem(`connection-${sessionId}`, JSON.stringify(connectionData));
             }
         };
 
-        // Timeout if no stream
-        setTimeout(() => {
-            if (status === 'Connecting to screen share...') {
-                setStatus('❌ No active screen share found. Ask presenter to start sharing.');
+        // Create offer for viewers
+        pc.createOffer().then(offer => {
+            pc.setLocalDescription(offer);
+            const offerData = {
+                type: 'offer',
+                sessionId: sessionId,
+                offer: offer,
+                timestamp: Date.now()
+            };
+            localStorage.setItem(`offer-${sessionId}`, JSON.stringify(offerData));
+        });
+
+        // Listen for answers
+        const checkForAnswer = setInterval(() => {
+            const answerData = localStorage.getItem(`answer-${sessionId}`);
+            if (answerData) {
+                const answer = JSON.parse(answerData);
+                pc.setRemoteDescription(answer.answer);
+                clearInterval(checkForAnswer);
             }
-        }, 5000);
+        }, 1000);
+    };
+
+    const setupViewer = () => {
+        const pc = new RTCPeerConnection({
+            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        });
+        peerConnection.current = pc;
+
+        pc.ontrack = (event) => {
+            setStatus('✅ Connected - receiving screen share');
+            if (remoteVideoRef.current) {
+                remoteVideoRef.current.srcObject = event.streams[0];
+            }
+        };
+
+        pc.ondatachannel = (event) => {
+            const channel = event.channel;
+            channel.onopen = () => console.log('Data channel opened');
+        };
+
+        // Look for host offer
+        const checkForOffer = setInterval(() => {
+            const offerData = localStorage.getItem(`offer-${sessionId}`);
+            if (offerData) {
+                const offer = JSON.parse(offerData);
+                pc.setRemoteDescription(offer.offer).then(() => {
+                    return pc.createAnswer();
+                }).then(answer => {
+                    pc.setLocalDescription(answer);
+                    const answerData = {
+                        type: 'answer',
+                        sessionId: sessionId,
+                        answer: answer,
+                        timestamp: Date.now()
+                    };
+                    localStorage.setItem(`answer-${sessionId}`, JSON.stringify(answerData));
+                });
+                clearInterval(checkForOffer);
+            }
+        }, 1000);
+
+        // Timeout if no offer found
+        setTimeout(() => {
+            clearInterval(checkForOffer);
+            if (status === 'Waiting for connection...') {
+                setStatus('❌ No active screen share found. Make sure the presenter started sharing.');
+            }
+        }, 10000);
     };
 
     const stopSharing = () => {
@@ -99,8 +157,13 @@ function App() {
             localVideoRef.current.srcObject.getTracks().forEach(track => track.stop());
             localVideoRef.current.srcObject = null;
         }
-        if (streamChannel.current) {
-            streamChannel.current.close();
+        if (peerConnection.current) {
+            peerConnection.current.close();
+        }
+        if (sessionId) {
+            localStorage.removeItem(`offer-${sessionId}`);
+            localStorage.removeItem(`answer-${sessionId}`);
+            localStorage.removeItem(`connection-${sessionId}`);
         }
         setIsSharing(false);
         setStatus('');
@@ -108,7 +171,7 @@ function App() {
 
     const copyLink = () => {
         navigator.clipboard.writeText(shareUrl);
-        alert('✅ Link copied! Open in another browser tab to test viewing.');
+        alert('✅ Link copied! Open in any browser to view the screen share.');
     };
 
     return (
@@ -212,22 +275,19 @@ function App() {
                     
                     <div className="video-container">
                         <h3>📺 Live Screen:</h3>
-                        <img 
+                        <video 
                             ref={remoteVideoRef} 
-                            alt="Live screen share"
+                            autoPlay
+                            controls
                             style={{
                                 width: '100%', 
                                 maxWidth: '600px',
                                 border: '2px solid #007bff',
                                 borderRadius: '4px',
                                 minHeight: '300px',
-                                background: '#f8f9fa'
+                                background: '#000'
                             }}
                         />
-                    </div>
-                    
-                    <div style={{marginTop: '20px', fontSize: '14px', color: '#666'}}>
-                        <p>💡 <strong>Tip:</strong> If you don't see the screen, make sure the presenter has started sharing and both tabs are in the same browser.</p>
                     </div>
                 </div>
             )}
