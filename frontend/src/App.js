@@ -5,11 +5,9 @@ function App() {
     const [isSharing, setIsSharing] = useState(false);
     const [shareUrl, setShareUrl] = useState('');
     const [isViewing, setIsViewing] = useState(false);
-    const [connectionStatus, setConnectionStatus] = useState('');
+    const [status, setStatus] = useState('');
     const localVideoRef = useRef(null);
     const remoteVideoRef = useRef(null);
-    const peerConnection = useRef(null);
-    const localStream = useRef(null);
 
     useEffect(() => {
         const urlParams = new URLSearchParams(window.location.search);
@@ -17,279 +15,149 @@ function App() {
         if (viewSessionId) {
             setSessionId(viewSessionId);
             setIsViewing(true);
-            setConnectionStatus('Waiting for screen share...');
-            setupViewer(viewSessionId);
+            setStatus('Waiting for screen share...');
+            checkForStream(viewSessionId);
         }
     }, []);
-
-    const createSession = () => {
-        const newSessionId = 'session-' + Math.random().toString(36).substr(2, 9);
-        setSessionId(newSessionId);
-        const url = `${window.location.origin}?session=${newSessionId}`;
-        setShareUrl(url);
-        return newSessionId;
-    };
 
     const startScreenShare = async () => {
         try {
             const stream = await navigator.mediaDevices.getDisplayMedia({
-                video: { mediaSource: 'screen' },
+                video: true,
                 audio: true
             });
 
-            localStream.current = stream;
-            if (localVideoRef.current) {
-                localVideoRef.current.srcObject = stream;
-            }
+            // Show local preview
+            localVideoRef.current.srcObject = stream;
 
-            let currentSessionId = sessionId;
-            if (!currentSessionId) {
-                currentSessionId = createSession();
-            }
-
+            // Create session
+            const newSessionId = 'session-' + Date.now();
+            setSessionId(newSessionId);
+            setShareUrl(`${window.location.origin}?session=${newSessionId}`);
             setIsSharing(true);
-            setConnectionStatus('Screen sharing active');
-            
-            // Store stream for viewers
-            localStorage.setItem(`stream-${currentSessionId}`, 'active');
-            
+            setStatus('✅ Screen sharing active');
+
+            // Store stream data for other viewers
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            const video = document.createElement('video');
+            video.srcObject = stream;
+            video.play();
+
+            video.onloadedmetadata = () => {
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                
+                const captureFrame = () => {
+                    if (isSharing) {
+                        ctx.drawImage(video, 0, 0);
+                        const imageData = canvas.toDataURL('image/jpeg', 0.8);
+                        localStorage.setItem(`stream-${newSessionId}`, imageData);
+                        setTimeout(captureFrame, 100); // 10 FPS
+                    }
+                };
+                captureFrame();
+            };
+
             stream.getVideoTracks()[0].addEventListener('ended', () => {
                 stopSharing();
             });
 
         } catch (error) {
-            if (error.name === 'NotAllowedError') {
-                setConnectionStatus('❌ Screen sharing permission denied');
-            } else {
-                setConnectionStatus('❌ Failed to start screen sharing: ' + error.message);
-            }
+            setStatus('❌ Permission denied or error: ' + error.message);
         }
     };
 
-    const setupViewer = (sessionId) => {
-        // Check if stream is active
-        const checkStream = setInterval(() => {
-            const streamActive = localStorage.getItem(`stream-${sessionId}`);
-            if (streamActive === 'active') {
-                setConnectionStatus('✅ Connected to screen share');
-                // In a real implementation, this would receive the actual stream
-                // For demo, show a placeholder
+    const checkForStream = (sessionId) => {
+        const interval = setInterval(() => {
+            const imageData = localStorage.getItem(`stream-${sessionId}`);
+            if (imageData) {
+                setStatus('✅ Connected - viewing screen');
                 if (remoteVideoRef.current) {
-                    remoteVideoRef.current.style.background = '#000';
-                    remoteVideoRef.current.style.display = 'block';
+                    remoteVideoRef.current.src = imageData;
                 }
-                clearInterval(checkStream);
             }
-        }, 1000);
+        }, 200);
 
-        // Stop checking after 30 seconds
-        setTimeout(() => {
-            clearInterval(checkStream);
-            if (connectionStatus === 'Waiting for screen share...') {
-                setConnectionStatus('❌ No active screen share found');
-            }
-        }, 30000);
+        setTimeout(() => clearInterval(interval), 30000);
     };
 
     const stopSharing = () => {
-        if (localStream.current) {
-            localStream.current.getTracks().forEach(track => track.stop());
-            localStream.current = null;
-        }
-        if (localVideoRef.current) {
+        if (localVideoRef.current && localVideoRef.current.srcObject) {
+            localVideoRef.current.srcObject.getTracks().forEach(track => track.stop());
             localVideoRef.current.srcObject = null;
         }
         if (sessionId) {
             localStorage.removeItem(`stream-${sessionId}`);
         }
         setIsSharing(false);
-        setConnectionStatus('');
+        setStatus('');
     };
 
-    const copyShareUrl = () => {
+    const copyLink = () => {
         navigator.clipboard.writeText(shareUrl);
-        alert('✅ Share URL copied! Open this link on another device to view the screen share.');
+        alert('Link copied! Open on another device to view screen.');
     };
 
     return (
         <div className="container">
-            <h1>🔒 Secure Screen Share</h1>
+            <h1>🔒 Screen Share</h1>
             
             <div className="warning">
                 <h3>⚠️ Privacy Notice</h3>
-                <p>This application requires your explicit permission to share your screen. 
-                   Your screen will only be shared when you click "Start Screen Share" and grant permission through your browser.</p>
+                <p>Click "Start Screen Share" and grant permission to share your screen.</p>
             </div>
 
-            {connectionStatus && (
+            {status && (
                 <div style={{
-                    background: connectionStatus.includes('❌') ? '#f8d7da' : '#d4edda',
-                    border: `1px solid ${connectionStatus.includes('❌') ? '#f5c6cb' : '#c3e6cb'}`,
                     padding: '15px',
-                    borderRadius: '4px',
                     margin: '20px 0',
-                    color: connectionStatus.includes('❌') ? '#721c24' : '#155724'
+                    borderRadius: '4px',
+                    background: status.includes('❌') ? '#f8d7da' : '#d4edda',
+                    color: status.includes('❌') ? '#721c24' : '#155724'
                 }}>
-                    {connectionStatus}
+                    {status}
                 </div>
             )}
 
             {!isViewing ? (
                 <div>
-                    <h2>📺 Share Your Screen</h2>
-                    <p>Click the button below to start sharing your screen with others.</p>
-                    
-                    <button 
-                        onClick={startScreenShare} 
-                        disabled={isSharing}
-                        style={{
-                            background: isSharing ? '#28a745' : '#007bff',
-                            color: 'white',
-                            border: 'none',
-                            padding: '15px 30px',
-                            borderRadius: '4px',
-                            cursor: isSharing ? 'not-allowed' : 'pointer',
-                            fontSize: '16px',
-                            margin: '10px 5px'
-                        }}
-                    >
-                        {isSharing ? '✅ Sharing Screen...' : '🚀 Start Screen Share'}
+                    <h2>Share Your Screen</h2>
+                    <button onClick={startScreenShare} disabled={isSharing}>
+                        {isSharing ? '✅ Sharing...' : '🚀 Start Screen Share'}
                     </button>
-                    
                     {isSharing && (
-                        <button 
-                            onClick={stopSharing}
-                            style={{
-                                background: '#dc3545',
-                                color: 'white',
-                                border: 'none',
-                                padding: '15px 30px',
-                                borderRadius: '4px',
-                                cursor: 'pointer',
-                                fontSize: '16px'
-                            }}
-                        >
-                            ⏹️ Stop Sharing
+                        <button onClick={stopSharing} style={{marginLeft: '10px'}}>
+                            ⏹️ Stop
                         </button>
                     )}
                     
                     {shareUrl && (
                         <div className="session-info">
-                            <h3>📤 Share this link with others:</h3>
+                            <h3>Share this link:</h3>
                             <div className="share-link">{shareUrl}</div>
-                            <button 
-                                onClick={copyShareUrl}
-                                style={{
-                                    background: '#28a745',
-                                    color: 'white',
-                                    border: 'none',
-                                    padding: '10px 20px',
-                                    borderRadius: '4px',
-                                    cursor: 'pointer',
-                                    marginTop: '10px'
-                                }}
-                            >
-                                📋 Copy Link
-                            </button>
-                            <p style={{fontSize: '14px', color: '#666', marginTop: '10px'}}>
-                                Session ID: {sessionId}
-                            </p>
+                            <button onClick={copyLink}>📋 Copy Link</button>
                         </div>
                     )}
                     
                     <div className="video-container">
-                        <h3>👀 Your Screen Preview:</h3>
-                        {isSharing ? (
-                            <video 
-                                ref={localVideoRef} 
-                                autoPlay 
-                                muted 
-                                style={{
-                                    width: '100%',
-                                    maxWidth: '600px',
-                                    border: '2px solid #28a745',
-                                    borderRadius: '4px'
-                                }}
-                            />
-                        ) : (
-                            <div style={{
-                                width: '100%',
-                                maxWidth: '600px',
-                                height: '300px',
-                                background: '#f8f9fa',
-                                border: '2px dashed #dee2e6',
-                                borderRadius: '4px',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                color: '#6c757d',
-                                fontSize: '16px'
-                            }}>
-                                Click "Start Screen Share" to see your screen here
-                            </div>
-                        )}
+                        <h3>Your Screen:</h3>
+                        <video ref={localVideoRef} autoPlay muted style={{width: '100%', maxWidth: '600px'}} />
                     </div>
                 </div>
             ) : (
                 <div>
-                    <h2>👁️ Viewing Shared Screen</h2>
-                    <p>Session ID: <code>{sessionId}</code></p>
-                    
+                    <h2>Viewing Screen</h2>
+                    <p>Session: {sessionId}</p>
                     <div className="video-container">
-                        <h3>📺 Shared Screen:</h3>
-                        <video 
-                            ref={remoteVideoRef}
-                            autoPlay
-                            controls
-                            style={{
-                                width: '100%',
-                                maxWidth: '600px',
-                                height: '400px',
-                                background: '#000',
-                                border: '2px solid #007bff',
-                                borderRadius: '4px',
-                                display: 'none'
-                            }}
+                        <img 
+                            ref={remoteVideoRef} 
+                            alt="Shared screen"
+                            style={{width: '100%', maxWidth: '600px', border: '1px solid #ccc'}}
                         />
-                        <div style={{
-                            width: '100%',
-                            maxWidth: '600px',
-                            height: '400px',
-                            background: '#f8f9fa',
-                            border: '2px dashed #007bff',
-                            borderRadius: '4px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            color: '#6c757d',
-                            fontSize: '16px',
-                            flexDirection: 'column'
-                        }}>
-                            <div>🔄 Waiting for screen share to start...</div>
-                            <div style={{fontSize: '14px', marginTop: '10px'}}>
-                                Ask the presenter to click "Start Screen Share"
-                            </div>
-                        </div>
                     </div>
                 </div>
             )}
-
-            <div style={{
-                marginTop: '40px',
-                padding: '20px',
-                background: '#e9ecef',
-                borderRadius: '4px',
-                fontSize: '14px'
-            }}>
-                <h3>🛠️ How it works:</h3>
-                <ol style={{textAlign: 'left', margin: '10px 0'}}>
-                    <li>Click "Start Screen Share" and grant browser permission</li>
-                    <li>Copy the generated link and share it with others</li>
-                    <li>Others can view your screen by opening the link</li>
-                    <li>Click "Stop Sharing" to end the session</li>
-                </ol>
-                <p><strong>Privacy:</strong> Your screen is only shared when you explicitly start sharing. No automatic recording or storage.</p>
-            </div>
         </div>
     );
 }
