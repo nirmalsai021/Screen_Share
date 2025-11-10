@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+npm-debug.log*
+
+# Build outputs
+frontend/build/
+.aws-sam/
+
+# Environment files
+.env
+.env.local
+.env.production.local
+
+# AWS
+.aws/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

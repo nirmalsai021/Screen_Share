@@ -1,0 +1,12 @@
+version = 0.1
+[default]
+[default.deploy]
+[default.deploy.parameters]
+stack_name = "screen-share-app"
+s3_bucket = ""
+s3_prefix = "screen-share-app"
+region = "us-east-1"
+capabilities = "CAPABILITY_IAM"
+parameter_overrides = "CorsOrigin=*"
+confirm_changeset = true
+fail_on_empty_changeset = false
