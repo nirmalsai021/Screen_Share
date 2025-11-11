@@ -58,9 +58,6 @@ function App() {
         const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001';
         const socket = io(API_URL);
 
-        // Join session room
-        socket.emit('join-session', sessionId);
-
         // Add stream to peer connection
         stream.getTracks().forEach(track => {
             pc.addTrack(track, stream);
@@ -75,32 +72,33 @@ function App() {
             channel.onclose = () => setStatus('✅ Screen sharing active - waiting for viewers');
         };
 
-        // Send ICE candidates instantly
+        // Send ICE candidates with role
         pc.onicecandidate = (event) => {
             if (event.candidate) {
-                socket.emit('ice-candidate', { sessionId, candidate: event.candidate });
+                socket.emit('ice-candidate', { sessionId, candidate: event.candidate, role: 'host' });
             }
         };
 
-        // Create and send offer instantly
+        // Create offer and start hosting
         pc.createOffer().then(offer => {
             return pc.setLocalDescription(offer);
         }).then(() => {
-            socket.emit('offer', { sessionId, offer: pc.localDescription });
-            console.log('Host: Offer sent instantly for session:', sessionId);
+            // Use host-start event that server expects
+            socket.emit('host-start', { sessionId, offer: pc.localDescription });
+            console.log('Host: Started session with offer:', sessionId);
         }).catch(error => {
             console.error('Error creating offer:', error);
             setStatus('❌ Error setting up connection');
         });
 
-        // Listen for answers instantly
+        // Listen for answers
         socket.on('answer', (answer) => {
             pc.setRemoteDescription(answer).then(() => {
                 setStatus('✅ Viewer connected!');
             }).catch(console.error);
         });
 
-        // Listen for ICE candidates instantly
+        // Listen for ICE candidates
         socket.on('ice-candidate', (candidate) => {
             pc.addIceCandidate(candidate).catch(console.error);
         });
@@ -208,11 +206,11 @@ function App() {
             channel.onopen = () => console.log('Data channel opened');
         };
 
-        // Send ICE candidates
+        // Send ICE candidates with role
         pc.onicecandidate = (event) => {
             if (event.candidate) {
                 if (useWebSocket && socket) {
-                    socket.emit('ice-candidate', { sessionId: viewSessionId, candidate: event.candidate });
+                    socket.emit('ice-candidate', { sessionId: viewSessionId, candidate: event.candidate, role: 'viewer' });
                 }
             }
         };
