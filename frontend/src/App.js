@@ -133,42 +133,79 @@ function App() {
 
         // Handle incoming video stream
         pc.ontrack = (event) => {
-            console.log('📺 Received video stream');
+            console.log('📺 Received video stream:', event.streams[0]);
             const remoteVideo = remoteVideoRef.current;
-            if (!remoteVideo) return;
+            if (!remoteVideo) {
+                console.error('Remote video element not found!');
+                return;
+            }
             
             const stream = event.streams[0];
+            console.log('📊 Stream details:', {
+                id: stream.id,
+                active: stream.active,
+                tracks: stream.getTracks().map(t => ({
+                    kind: t.kind, 
+                    readyState: t.readyState,
+                    enabled: t.enabled
+                }))
+            });
+            
+            // Force video element properties
             remoteVideo.srcObject = stream;
+            remoteVideo.autoplay = true;
+            remoteVideo.playsInline = true;
+            remoteVideo.muted = true;
             remoteVideo.style.display = 'block';
+            remoteVideo.style.visibility = 'visible';
             
-            console.log('📊 Stream tracks:', stream.getTracks().map(t => ({kind: t.kind, readyState: t.readyState})));
+            // Monitor video dimensions
+            const checkVideo = setInterval(() => {
+                console.log('📊 Video check:', {
+                    videoWidth: remoteVideo.videoWidth,
+                    videoHeight: remoteVideo.videoHeight,
+                    readyState: remoteVideo.readyState,
+                    paused: remoteVideo.paused,
+                    currentTime: remoteVideo.currentTime
+                });
+                
+                if (remoteVideo.videoWidth > 0 && remoteVideo.videoHeight > 0) {
+                    clearInterval(checkVideo);
+                    setStatus('✅ Screen share playing - ' + remoteVideo.videoWidth + 'x' + remoteVideo.videoHeight);
+                }
+            }, 1000);
             
-            // Auto-play with fallback
+            // Play video
             const playVideo = async () => {
                 try {
-                    remoteVideo.muted = true;
                     await remoteVideo.play();
-                    setStatus('✅ Screen share playing');
-                    console.log('▶️ Video playing');
+                    console.log('▶️ Video started playing');
+                    setStatus('✅ Screen share active');
                 } catch (err) {
-                    console.warn('⚠️ Autoplay blocked, click to play');
-                    setStatus('🎬 Click video to play');
-                    remoteVideo.onclick = async () => {
+                    console.warn('⚠️ Autoplay blocked:', err.message);
+                    setStatus('🎬 Click video to play (' + err.message + ')');
+                    
+                    // Click to play fallback
+                    const clickHandler = async () => {
                         try {
                             remoteVideo.muted = false;
                             await remoteVideo.play();
                             setStatus('✅ Screen share playing');
+                            remoteVideo.removeEventListener('click', clickHandler);
                         } catch (e) {
                             console.error('Manual play failed:', e);
+                            setStatus('❌ Play failed: ' + e.message);
                         }
                     };
+                    remoteVideo.addEventListener('click', clickHandler);
                 }
             };
             
-            if (remoteVideo.readyState >= 2) {
+            // Try to play immediately or wait for metadata
+            if (remoteVideo.readyState >= 1) {
                 playVideo();
             } else {
-                remoteVideo.onloadedmetadata = playVideo;
+                remoteVideo.addEventListener('loadedmetadata', playVideo, { once: true });
             }
         };
 
@@ -353,7 +390,8 @@ function App() {
                     <div className="video-container">
                         <h3>📺 Live Screen:</h3>
                         <video 
-                            ref={remoteVideoRef} 
+                            ref={remoteVideoRef}
+                            id="remoteVideo"
                             autoPlay
                             playsInline
                             muted
@@ -374,19 +412,45 @@ function App() {
                             </p>
                             <button 
                                 onClick={() => {
-                                    if (remoteVideoRef.current) {
-                                        const v = remoteVideoRef.current;
-                                        console.log('Video debug:', {
-                                            videoWidth: v.videoWidth,
-                                            videoHeight: v.videoHeight,
-                                            paused: v.paused,
-                                            readyState: v.readyState,
-                                            currentTime: v.currentTime,
-                                            srcObject: !!v.srcObject
+                                    const v = remoteVideoRef.current;
+                                    if (v) {
+                                        console.log('🔍 FULL VIDEO DEBUG:', {
+                                            element: {
+                                                videoWidth: v.videoWidth,
+                                                videoHeight: v.videoHeight,
+                                                readyState: v.readyState,
+                                                paused: v.paused,
+                                                muted: v.muted,
+                                                currentTime: v.currentTime,
+                                                duration: v.duration,
+                                                autoplay: v.autoplay,
+                                                playsInline: v.playsInline
+                                            },
+                                            stream: v.srcObject ? {
+                                                id: v.srcObject.id,
+                                                active: v.srcObject.active,
+                                                tracks: v.srcObject.getTracks().map(t => ({
+                                                    kind: t.kind,
+                                                    readyState: t.readyState,
+                                                    enabled: t.enabled,
+                                                    id: t.id
+                                                }))
+                                            } : 'NO STREAM',
+                                            style: {
+                                                display: v.style.display,
+                                                visibility: v.style.visibility,
+                                                opacity: v.style.opacity
+                                            }
                                         });
-                                        if (v.srcObject) {
-                                            console.log('Stream tracks:', v.srcObject.getTracks().map(t => ({kind: t.kind, readyState: t.readyState})));
-                                        }
+                                        
+                                        // Try to play manually
+                                        v.play().then(() => {
+                                            console.log('✅ Manual play successful');
+                                        }).catch(err => {
+                                            console.log('❌ Manual play failed:', err.message);
+                                        });
+                                    } else {
+                                        console.log('❌ Video element not found');
                                     }
                                 }}
                                 style={{
@@ -399,7 +463,7 @@ function App() {
                                     fontSize: '12px'
                                 }}
                             >
-                                Debug Video Status
+                                🔍 Debug & Play Video
                             </button>
                         </div>
                     </div>
