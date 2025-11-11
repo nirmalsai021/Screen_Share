@@ -140,56 +140,63 @@ function App() {
 
         pc.ontrack = (event) => {
             console.log('pc.ontrack', event.streams);
-            setStatus('✅ Connected - receiving screen share');
-            if (remoteVideoRef.current) {
-                attachRemoteStream(remoteVideoRef.current, event.streams[0]);
-            }
-        };
-        
-        // Robust stream attachment with autoplay fallback
-        const attachRemoteStream = async (videoElement, stream) => {
-            try {
-                videoElement.autoplay = true;
-                videoElement.playsInline = true;
-                videoElement.muted = true; // Required for autoplay
-                videoElement.srcObject = stream;
-                
-                const tryPlay = async () => {
-                    try {
-                        await videoElement.play();
-                        console.log('Playback started automatically');
-                        setStatus('✅ Screen share playing');
-                    } catch (err) {
-                        console.warn('Autoplay blocked, showing play button', err);
-                        showPlayButton(videoElement);
-                    }
-                };
-                
-                if (videoElement.readyState >= 2) {
-                    await tryPlay();
-                } else {
-                    videoElement.onloadedmetadata = tryPlay;
-                }
-            } catch (err) {
-                console.error('Stream attachment error', err);
-                showPlayButton(videoElement);
-            }
-        };
-        
-        const showPlayButton = (videoElement) => {
-            setStatus('🎬 Click to play screen share');
-            const playHandler = async () => {
-                try {
-                    videoElement.muted = false; // Unmute on user interaction
-                    await videoElement.play();
+            const remoteVideo = remoteVideoRef.current;
+            if (!remoteVideo) return;
+            
+            // Ensure visible
+            remoteVideo.style.display = 'block';
+            remoteVideo.style.opacity = '1';
+            remoteVideo.style.visibility = 'visible';
+            
+            // Attach stream
+            const stream = event.streams[0];
+            remoteVideo.srcObject = stream;
+            
+            console.log('Stream tracks:', stream.getTracks().map(t => ({kind: t.kind, readyState: t.readyState})));
+            
+            // Debug frame updates
+            const frameCheck = setInterval(() => {
+                console.log('Video dimensions:', remoteVideo.videoWidth, 'x', remoteVideo.videoHeight, 'time:', remoteVideo.currentTime);
+                if (remoteVideo.videoWidth > 0) {
+                    clearInterval(frameCheck);
                     setStatus('✅ Screen share playing');
-                    videoElement.removeEventListener('click', playHandler);
+                }
+            }, 1000);
+            
+            // Autoplay helper
+            const tryPlay = async () => {
+                try {
+                    remoteVideo.autoplay = true;
+                    remoteVideo.playsInline = true;
+                    remoteVideo.muted = true;
+                    await remoteVideo.play();
+                    console.log('🎬 Playback started');
+                    setStatus('✅ Screen share playing');
                 } catch (err) {
-                    console.error('Manual play failed', err);
+                    console.warn('Autoplay blocked', err);
+                    setStatus('🎬 Click video to start screen share');
+                    
+                    // Add click handler for manual play
+                    const playHandler = async () => {
+                        try {
+                            remoteVideo.muted = false;
+                            await remoteVideo.play();
+                            setStatus('✅ Screen share playing');
+                            remoteVideo.removeEventListener('click', playHandler);
+                        } catch (e) {
+                            console.error('Manual play failed', e);
+                        }
+                    };
+                    remoteVideo.addEventListener('click', playHandler);
+                    remoteVideo.style.cursor = 'pointer';
                 }
             };
-            videoElement.addEventListener('click', playHandler);
-            videoElement.style.cursor = 'pointer';
+            
+            if (remoteVideo.readyState >= 2) {
+                tryPlay();
+            } else {
+                remoteVideo.onloadedmetadata = tryPlay;
+            }
         };
         
         pc.oniceconnectionstatechange = () => {
@@ -416,9 +423,40 @@ function App() {
                                 cursor: 'pointer'
                             }}
                         />
-                        <p style={{ textAlign: 'center', color: '#666', fontSize: '14px' }}>
-                            If video doesn't start automatically, click on it to play
-                        </p>
+                        <div style={{ textAlign: 'center', marginTop: '10px' }}>
+                            <p style={{ color: '#666', fontSize: '14px', margin: '5px 0' }}>
+                                If video doesn't start automatically, click on it to play
+                            </p>
+                            <button 
+                                onClick={() => {
+                                    if (remoteVideoRef.current) {
+                                        const v = remoteVideoRef.current;
+                                        console.log('Video debug:', {
+                                            videoWidth: v.videoWidth,
+                                            videoHeight: v.videoHeight,
+                                            paused: v.paused,
+                                            readyState: v.readyState,
+                                            currentTime: v.currentTime,
+                                            srcObject: !!v.srcObject
+                                        });
+                                        if (v.srcObject) {
+                                            console.log('Stream tracks:', v.srcObject.getTracks().map(t => ({kind: t.kind, readyState: t.readyState})));
+                                        }
+                                    }
+                                }}
+                                style={{
+                                    background: '#17a2b8',
+                                    color: 'white',
+                                    border: 'none',
+                                    padding: '8px 16px',
+                                    borderRadius: '4px',
+                                    cursor: 'pointer',
+                                    fontSize: '12px'
+                                }}
+                            >
+                                Debug Video Status
+                            </button>
+                        </div>
                     </div>
                 </div>
             )}
