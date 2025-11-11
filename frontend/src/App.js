@@ -142,11 +142,54 @@ function App() {
             console.log('pc.ontrack', event.streams);
             setStatus('✅ Connected - receiving screen share');
             if (remoteVideoRef.current) {
-                remoteVideoRef.current.srcObject = event.streams[0];
-                remoteVideoRef.current.play().catch(err => {
-                    console.warn('Playback blocked by browser autoplay policy', err);
-                });
+                attachRemoteStream(remoteVideoRef.current, event.streams[0]);
             }
+        };
+        
+        // Robust stream attachment with autoplay fallback
+        const attachRemoteStream = async (videoElement, stream) => {
+            try {
+                videoElement.autoplay = true;
+                videoElement.playsInline = true;
+                videoElement.muted = true; // Required for autoplay
+                videoElement.srcObject = stream;
+                
+                const tryPlay = async () => {
+                    try {
+                        await videoElement.play();
+                        console.log('Playback started automatically');
+                        setStatus('✅ Screen share playing');
+                    } catch (err) {
+                        console.warn('Autoplay blocked, showing play button', err);
+                        showPlayButton(videoElement);
+                    }
+                };
+                
+                if (videoElement.readyState >= 2) {
+                    await tryPlay();
+                } else {
+                    videoElement.onloadedmetadata = tryPlay;
+                }
+            } catch (err) {
+                console.error('Stream attachment error', err);
+                showPlayButton(videoElement);
+            }
+        };
+        
+        const showPlayButton = (videoElement) => {
+            setStatus('🎬 Click to play screen share');
+            const playHandler = async () => {
+                try {
+                    videoElement.muted = false; // Unmute on user interaction
+                    await videoElement.play();
+                    setStatus('✅ Screen share playing');
+                    videoElement.removeEventListener('click', playHandler);
+                } catch (err) {
+                    console.error('Manual play failed', err);
+                }
+            };
+            videoElement.addEventListener('click', playHandler);
+            videoElement.style.cursor = 'pointer';
         };
         
         pc.oniceconnectionstatechange = () => {
@@ -369,9 +412,13 @@ function App() {
                                 border: '2px solid #007bff',
                                 borderRadius: '4px',
                                 minHeight: '300px',
-                                background: '#000'
+                                background: '#000',
+                                cursor: 'pointer'
                             }}
                         />
+                        <p style={{ textAlign: 'center', color: '#666', fontSize: '14px' }}>
+                            If video doesn't start automatically, click on it to play
+                        </p>
                     </div>
                 </div>
             )}
