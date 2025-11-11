@@ -51,54 +51,65 @@ function App() {
 
     const setupHost = (stream, sessionId) => {
         const pc = new RTCPeerConnection({
-            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' },
+                { urls: 'turn:relay.metered.ca:80', username: 'openai', credential: 'openai123' },
+                { urls: 'turn:relay.metered.ca:443', username: 'openai', credential: 'openai123' }
+            ]
         });
         peerConnection.current = pc;
 
         const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001';
         const socket = io(API_URL);
 
-        // Add stream to peer connection
+        console.log('🎥 Host connecting to:', API_URL);
+
+        // Add stream tracks
         stream.getTracks().forEach(track => {
             pc.addTrack(track, stream);
+            console.log('➕ Added track:', track.kind);
         });
 
-        // Create data channel for signaling
-        dataChannel.current = pc.createDataChannel('signaling');
-        
-        pc.ondatachannel = (event) => {
-            const channel = event.channel;
-            channel.onopen = () => setStatus('✅ Viewer connected!');
-            channel.onclose = () => setStatus('✅ Screen sharing active - waiting for viewers');
-        };
-
-        // Send ICE candidates with role
+        // ICE candidate handling
         pc.onicecandidate = (event) => {
             if (event.candidate) {
-                socket.emit('ice-candidate', { sessionId, candidate: event.candidate, role: 'host' });
+                socket.emit('ice-candidate', { 
+                    sessionId, 
+                    candidate: event.candidate, 
+                    isHost: true 
+                });
             }
         };
 
-        // Create offer and start hosting
+        // Connection state monitoring
+        pc.oniceconnectionstatechange = () => {
+            console.log('🧊 Host ICE state:', pc.iceConnectionState);
+            if (pc.iceConnectionState === 'connected') {
+                setStatus('✅ Viewer connected!');
+            }
+        };
+
+        // Create and send offer
         pc.createOffer().then(offer => {
             return pc.setLocalDescription(offer);
         }).then(() => {
-            // Use host-start event that server expects
-            socket.emit('host-start', { sessionId, offer: pc.localDescription });
-            console.log('Host: Started session with offer:', sessionId);
+            socket.emit('start-host', { sessionId, offer: pc.localDescription });
+            console.log('📤 Host offer sent for session:', sessionId);
         }).catch(error => {
-            console.error('Error creating offer:', error);
+            console.error('❌ Host offer error:', error);
             setStatus('❌ Error setting up connection');
         });
 
-        // Listen for answers
-        socket.on('answer', (answer) => {
+        // Listen for viewer answers
+        socket.on('receive-answer', (answer) => {
+            console.log('📥 Host received answer');
             pc.setRemoteDescription(answer).then(() => {
-                setStatus('✅ Viewer connected!');
+                console.log('✅ Host set remote description');
             }).catch(console.error);
         });
 
-        // Listen for ICE candidates
+        // Listen for viewer ICE candidates
         socket.on('ice-candidate', (candidate) => {
             pc.addIceCandidate(candidate).catch(console.error);
         });
@@ -106,180 +117,116 @@ function App() {
 
     const setupViewer = (viewSessionId) => {
         const pc = new RTCPeerConnection({
-            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' },
+                { urls: 'turn:relay.metered.ca:80', username: 'openai', credential: 'openai123' },
+                { urls: 'turn:relay.metered.ca:443', username: 'openai', credential: 'openai123' }
+            ]
         });
         peerConnection.current = pc;
 
         const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001';
-        console.log('Viewer: Connecting to API:', API_URL);
+        const socket = io(API_URL);
         
-        // Try WebSocket first, fallback to HTTP polling
-        let socket;
-        let useWebSocket = true;
-        
-        try {
-            socket = io(API_URL, { timeout: 5000 });
-            
-            socket.on('connect', () => {
-                console.log('WebSocket connected');
-                socket.emit('join-session', viewSessionId);
-            });
-            
-            socket.on('connect_error', () => {
-                console.log('WebSocket failed, falling back to HTTP polling');
-                useWebSocket = false;
-                setupHttpPolling();
-            });
-        } catch (error) {
-            console.log('WebSocket not available, using HTTP polling');
-            useWebSocket = false;
-            setupHttpPolling();
-        }
+        console.log('👁️ Viewer connecting to:', API_URL);
 
+        // Handle incoming video stream
         pc.ontrack = (event) => {
-            console.log('pc.ontrack', event.streams);
+            console.log('📺 Received video stream');
             const remoteVideo = remoteVideoRef.current;
             if (!remoteVideo) return;
             
-            // Ensure visible
-            remoteVideo.style.display = 'block';
-            remoteVideo.style.opacity = '1';
-            remoteVideo.style.visibility = 'visible';
-            
-            // Attach stream
             const stream = event.streams[0];
             remoteVideo.srcObject = stream;
+            remoteVideo.style.display = 'block';
             
-            console.log('Stream tracks:', stream.getTracks().map(t => ({kind: t.kind, readyState: t.readyState})));
+            console.log('📊 Stream tracks:', stream.getTracks().map(t => ({kind: t.kind, readyState: t.readyState})));
             
-            // Debug frame updates
-            const frameCheck = setInterval(() => {
-                console.log('Video dimensions:', remoteVideo.videoWidth, 'x', remoteVideo.videoHeight, 'time:', remoteVideo.currentTime);
-                if (remoteVideo.videoWidth > 0) {
-                    clearInterval(frameCheck);
-                    setStatus('✅ Screen share playing');
-                }
-            }, 1000);
-            
-            // Autoplay helper
-            const tryPlay = async () => {
+            // Auto-play with fallback
+            const playVideo = async () => {
                 try {
-                    remoteVideo.autoplay = true;
-                    remoteVideo.playsInline = true;
                     remoteVideo.muted = true;
                     await remoteVideo.play();
-                    console.log('🎬 Playback started');
                     setStatus('✅ Screen share playing');
+                    console.log('▶️ Video playing');
                 } catch (err) {
-                    console.warn('Autoplay blocked', err);
-                    setStatus('🎬 Click video to start screen share');
-                    
-                    // Add click handler for manual play
-                    const playHandler = async () => {
+                    console.warn('⚠️ Autoplay blocked, click to play');
+                    setStatus('🎬 Click video to play');
+                    remoteVideo.onclick = async () => {
                         try {
                             remoteVideo.muted = false;
                             await remoteVideo.play();
                             setStatus('✅ Screen share playing');
-                            remoteVideo.removeEventListener('click', playHandler);
                         } catch (e) {
-                            console.error('Manual play failed', e);
+                            console.error('Manual play failed:', e);
                         }
                     };
-                    remoteVideo.addEventListener('click', playHandler);
-                    remoteVideo.style.cursor = 'pointer';
                 }
             };
             
             if (remoteVideo.readyState >= 2) {
-                tryPlay();
+                playVideo();
             } else {
-                remoteVideo.onloadedmetadata = tryPlay;
+                remoteVideo.onloadedmetadata = playVideo;
             }
         };
-        
-        pc.oniceconnectionstatechange = () => {
-            console.log('ICE state', pc.iceConnectionState);
-        };
 
-        pc.ondatachannel = (event) => {
-            const channel = event.channel;
-            channel.onopen = () => console.log('Data channel opened');
-        };
-
-        // Send ICE candidates with role
+        // ICE candidate handling
         pc.onicecandidate = (event) => {
             if (event.candidate) {
-                if (useWebSocket && socket) {
-                    socket.emit('ice-candidate', { sessionId: viewSessionId, candidate: event.candidate, role: 'viewer' });
-                }
+                socket.emit('ice-candidate', { 
+                    sessionId: viewSessionId, 
+                    candidate: event.candidate, 
+                    isHost: false 
+                });
             }
         };
 
-        // WebSocket listeners
-        if (socket) {
-            socket.on('connect', () => {
-                console.log('socket connected:', socket.id);
-            });
-            
-            socket.on('offer', (offer) => {
-                console.log('received offer', offer.type, 'sdp length', offer.sdp?.length);
-                setStatus('🔄 Connecting to screen share...');
-                pc.setRemoteDescription(offer).then(() => {
-                    return pc.createAnswer();
-                }).then(answer => {
-                    return pc.setLocalDescription(answer);
-                }).then(() => {
-                    socket.emit('answer', { sessionId: viewSessionId, answer: pc.localDescription });
-                    setStatus('🔄 Establishing connection...');
-                }).catch(error => {
-                    console.error('Error processing offer:', error);
-                    setStatus('❌ Error connecting to screen share');
-                });
-            });
-
-            socket.on('ice-candidate', (candidate) => {
-                pc.addIceCandidate(candidate).catch(console.error);
-            });
-        }
-        
-        // HTTP Polling fallback
-        function setupHttpPolling() {
-            console.log('Using HTTP polling fallback');
-            const checkForOffer = setInterval(() => {
-                fetch(`${API_URL}/api/signaling/${viewSessionId}/offer`)
-                    .then(res => res.json())
-                    .then(data => {
-                        if (data && data.offer) {
-                            clearInterval(checkForOffer);
-                            setStatus('🔄 Connecting to screen share...');
-                            console.log('Viewer: Processing offer for session:', viewSessionId);
-                            pc.setRemoteDescription(data.offer).then(() => {
-                                return pc.createAnswer();
-                            }).then(answer => {
-                                return pc.setLocalDescription(answer);
-                            }).then(() => {
-                                return fetch(`${API_URL}/api/signaling/${viewSessionId}`, {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ type: 'answer', answer: pc.localDescription })
-                                });
-                            }).then(() => {
-                                setStatus('🔄 Establishing connection...');
-                            }).catch(error => {
-                                console.error('Error processing offer:', error);
-                                setStatus('❌ Error connecting to screen share');
-                            });
-                        }
-                    }).catch(console.error);
-            }, 2000);
-        }
-
-        // Timeout if no offer found
-        setTimeout(() => {
-            if (status === 'Waiting for connection...') {
-                setStatus('❌ No active screen share found. Make sure the presenter started sharing.');
+        // Connection state monitoring
+        pc.oniceconnectionstatechange = () => {
+            console.log('🧊 Viewer ICE state:', pc.iceConnectionState);
+            if (pc.iceConnectionState === 'connected') {
+                setStatus('✅ Connected to screen share');
+            } else if (pc.iceConnectionState === 'failed') {
+                setStatus('❌ Connection failed');
             }
-        }, 15000);
+        };
+
+        // Socket event handlers
+        socket.on('connect', () => {
+            console.log('🔌 Viewer socket connected:', socket.id);
+            socket.emit('join-viewer', viewSessionId);
+        });
+
+        socket.on('receive-offer', (offer) => {
+            console.log('📥 Viewer received offer');
+            setStatus('🔄 Connecting to screen share...');
+            
+            pc.setRemoteDescription(offer).then(() => {
+                return pc.createAnswer();
+            }).then(answer => {
+                return pc.setLocalDescription(answer);
+            }).then(() => {
+                socket.emit('send-answer', { sessionId: viewSessionId, answer: pc.localDescription });
+                console.log('📤 Viewer sent answer');
+            }).catch(error => {
+                console.error('❌ Viewer answer error:', error);
+                setStatus('❌ Connection error');
+            });
+        });
+
+        socket.on('ice-candidate', (candidate) => {
+            pc.addIceCandidate(candidate).catch(console.error);
+        });
+
+        socket.on('no-session', () => {
+            setStatus('❌ No active screen share found');
+        });
+
+        socket.on('connect_error', () => {
+            setStatus('❌ Connection error');
+        });
     };
 
     const stopSharing = () => {
