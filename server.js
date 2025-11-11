@@ -54,9 +54,11 @@ app.post('/api/signaling/:sessionId', (req, res) => {
 // Get signaling data
 app.get('/api/signaling/:sessionId/:type', (req, res) => {
     const { sessionId, type } = req.params;
+    console.log(`API request: ${type} for session ${sessionId}`);
     
     if (type === 'offer') {
         const data = offers.get(sessionId);
+        console.log(`Found offer for ${sessionId}:`, !!data);
         res.json(data || null);
     } else if (type === 'answer') {
         const data = answers.get(sessionId);
@@ -65,6 +67,15 @@ app.get('/api/signaling/:sessionId/:type', (req, res) => {
         const data = candidates.get(sessionId) || [];
         res.json(data);
     }
+});
+
+// Debug endpoint
+app.get('/api/debug', (req, res) => {
+    res.json({
+        sessions: Array.from(sessions.keys()),
+        offers: Array.from(offers.keys()),
+        answers: Array.from(answers.keys())
+    });
 });
 
 // Cleanup old sessions every 5 minutes
@@ -87,15 +98,24 @@ io.on('connection', (socket) => {
     socket.on('join-session', (sessionId) => {
         socket.join(sessionId);
         console.log(`Socket ${socket.id} joined session ${sessionId}`);
+        
+        // Send existing offer if available
+        const existingOffer = offers.get(sessionId);
+        if (existingOffer) {
+            console.log(`Sending existing offer to ${socket.id}`);
+            socket.emit('offer', existingOffer.offer);
+        }
     });
 
     socket.on('offer', (data) => {
-        offers.set(data.sessionId, data.offer);
+        offers.set(data.sessionId, { offer: data.offer, timestamp: Date.now() });
+        console.log(`Offer stored for session ${data.sessionId}`);
         socket.to(data.sessionId).emit('offer', data.offer);
     });
 
     socket.on('answer', (data) => {
-        answers.set(data.sessionId, data.answer);
+        answers.set(data.sessionId, { answer: data.answer, timestamp: Date.now() });
+        console.log(`Answer stored for session ${data.sessionId}`);
         socket.to(data.sessionId).emit('answer', data.answer);
     });
 
