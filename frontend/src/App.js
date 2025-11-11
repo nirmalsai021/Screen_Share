@@ -139,11 +139,18 @@ function App() {
         }
 
         pc.ontrack = (event) => {
-            console.log('Received remote stream:', event.streams[0]);
+            console.log('pc.ontrack', event.streams);
             setStatus('✅ Connected - receiving screen share');
             if (remoteVideoRef.current) {
                 remoteVideoRef.current.srcObject = event.streams[0];
+                remoteVideoRef.current.play().catch(err => {
+                    console.warn('Playback blocked by browser autoplay policy', err);
+                });
             }
+        };
+        
+        pc.oniceconnectionstatechange = () => {
+            console.log('ICE state', pc.iceConnectionState);
         };
 
         pc.ondatachannel = (event) => {
@@ -162,9 +169,13 @@ function App() {
 
         // WebSocket listeners
         if (socket) {
+            socket.on('connect', () => {
+                console.log('socket connected:', socket.id);
+            });
+            
             socket.on('offer', (offer) => {
+                console.log('received offer', offer.type, 'sdp length', offer.sdp?.length);
                 setStatus('🔄 Connecting to screen share...');
-                console.log('Viewer: Processing offer for session:', viewSessionId);
                 pc.setRemoteDescription(offer).then(() => {
                     return pc.createAnswer();
                 }).then(answer => {
@@ -349,6 +360,8 @@ function App() {
                         <video 
                             ref={remoteVideoRef} 
                             autoPlay
+                            playsInline
+                            muted
                             controls
                             style={{
                                 width: '100%', 
